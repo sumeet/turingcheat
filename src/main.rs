@@ -10,14 +10,37 @@ fn main() {
     const NUM_OUTPUTS: usize = 1;
     let gates: Vec<Box<dyn Gate>> =
         vec![box Not {}, box Not {}, box BitSwitch {}, box BitSwitch {}];
+    let not_0_index = 0;
+    let not_1_index = 1;
+    let bitswitch_0_index = 2;
+    let bitswitch_1_index = 3;
     #[allow(unused)]
     let all_connection_indices = generate_all_connection_indices(NUM_INPUTS, NUM_OUTPUTS, &gates);
 
     let inputs = gen_inputs::<NUM_INPUTS>();
+    let mut connections = HashMap::new();
+
+    // input 0
+    connections.insert(
+        ConnectionIndex::Input(0),
+        ConnectionIndex::GateInput {
+            gate_index: bitswitch_0_index,
+            io_index: 0,
+        },
+    );
+    // input 1
+    connections.insert(
+        ConnectionIndex::Input(0),
+        ConnectionIndex::GateInput {
+            gate_index: bitswitch_0_index,
+            io_index: 0,
+        },
+    );
+
     let circuit = Circuit {
         num_outputs: NUM_OUTPUTS,
         gates: gates.clone(),
-        connections: HashMap::new(),
+        connections,
     };
     let output = circuit.run(&inputs[0]);
     dbg!(output);
