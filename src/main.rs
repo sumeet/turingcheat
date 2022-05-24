@@ -1,7 +1,8 @@
 #![feature(box_syntax)]
 
 use dyn_clonable::clonable;
-use itertools::Itertools;
+use std::collections::HashMap;
+use std::iter::once;
 use std::ops::BitXor;
 
 fn main() {
@@ -9,19 +10,20 @@ fn main() {
     const NUM_OUTPUTS: usize = 1;
     let gates: Vec<Box<dyn Gate>> =
         vec![box Not {}, box Not {}, box BitSwitch {}, box BitSwitch {}];
+    #[allow(unused)]
     let all_connection_indices = generate_all_connection_indices(NUM_INPUTS, NUM_OUTPUTS, &gates);
 
     let inputs = gen_inputs::<NUM_INPUTS>();
     let circuit = Circuit {
-        num_inputs: NUM_INPUTS,
         num_outputs: NUM_OUTPUTS,
         gates: gates.clone(),
-        connections: Vec::new(),
+        connections: HashMap::new(),
     };
     let output = circuit.run(&inputs[0]);
+    dbg!(output);
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Ord, PartialOrd)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Ord, PartialOrd, Hash)]
 enum ConnectionIndex {
     Input(usize),
     Output(usize),
@@ -29,21 +31,84 @@ enum ConnectionIndex {
     GateOutput { gate_index: usize, io_index: usize },
 }
 
-struct Connection {
-    input: ConnectionIndex,
-    output: ConnectionIndex,
-}
-
 struct Circuit {
-    num_inputs: usize,
     num_outputs: usize,
     gates: Vec<Box<dyn Gate>>,
-    connections: Vec<Connection>,
+    connections: HashMap<ConnectionIndex, ConnectionIndex>,
 }
 
 impl Circuit {
-    pub(crate) fn run(&self, p0: &[bool]) -> _ {
-        todo!()
+    fn run(&self, inputs: &[bool]) -> Vec<Option<bool>> {
+        let mut outputs = vec![None; self.num_outputs];
+        let mut set_inputs_by_gate = self
+            .gates
+            .iter()
+            .map(|gate| once(None).cycle().take(gate.num_inputs()).collect())
+            .collect::<Vec<Vec<Option<bool>>>>();
+
+        for (i, input) in inputs.iter().enumerate() {
+            let dest = self
+                .connections
+                .get(&ConnectionIndex::Input(i))
+                .ok_or_else(|| format!("No connection for input {}", i))
+                .unwrap();
+            match dest {
+                ConnectionIndex::GateInput {
+                    gate_index,
+                    io_index,
+                } => {
+                    set_inputs_by_gate[*gate_index][*io_index] = Some(*input);
+                }
+                ConnectionIndex::Output(output_index) => {
+                    outputs[*output_index] = Some(*input);
+                }
+                ConnectionIndex::Input(_) | ConnectionIndex::GateOutput { .. } => unreachable!(),
+            }
+        }
+
+        while let Some((gate_index, inputs)) =
+            set_inputs_by_gate
+                .iter()
+                .enumerate()
+                .find_map(|(i, inputs)| {
+                    let is_all_inputs_set = inputs.iter().all(|input| input.is_some());
+                    if !is_all_inputs_set {
+                        return None;
+                    }
+                    let inputs = inputs
+                        .iter()
+                        .map(|input| input.unwrap())
+                        .collect::<Vec<_>>();
+                    Some((i, inputs))
+                })
+        {
+            let triggered_outputs = self.gates.get(gate_index).unwrap().trigger(&inputs);
+            for (i, output) in triggered_outputs.iter().enumerate() {
+                let dest = self
+                    .connections
+                    .get(&ConnectionIndex::GateOutput {
+                        gate_index,
+                        io_index: i,
+                    })
+                    .unwrap();
+                match dest {
+                    ConnectionIndex::GateInput {
+                        gate_index,
+                        io_index,
+                    } => {
+                        set_inputs_by_gate[*gate_index][*io_index] = Some(*output);
+                    }
+                    ConnectionIndex::Output(output_index) => {
+                        outputs[*output_index] = Some(*output);
+                    }
+                    ConnectionIndex::Input(_) => {
+                        unreachable!()
+                    }
+                    ConnectionIndex::GateOutput { .. } => unreachable!(),
+                }
+            }
+        }
+        outputs
     }
 }
 
@@ -92,47 +157,7 @@ fn gen_inputs<const N: usize>() -> Vec<[bool; N]> {
 trait Gate: Clone {
     fn num_inputs(&self) -> usize;
     fn num_outputs(&self) -> usize;
-    fn trigger(&mut self, inputs: &[bool]) -> Vec<bool>;
-}
-
-#[derive(Clone)]
-struct Output {
-    received: Option<Vec<bool>>,
-}
-
-impl Output {
-    fn new() -> Self {
-        Self { received: None }
-    }
-}
-
-impl Gate for Output {
-    fn num_inputs(&self) -> usize {
-        0
-    }
-
-    fn num_outputs(&self) -> usize {
-        1
-    }
-
-    fn trigger(&mut self, inputs: &[bool]) -> Vec<bool> {
-        self.received = Some(inputs.to_vec());
-        vec![]
-    }
-}
-
-impl Gate for Input {
-    fn num_inputs(&self) -> usize {
-        0
-    }
-
-    fn num_outputs(&self) -> usize {
-        1
-    }
-
-    fn trigger(&mut self, _: &[bool]) -> Vec<bool> {
-        vec![self.signal]
-    }
+    fn trigger(&self, inputs: &[bool]) -> Vec<bool>;
 }
 
 #[derive(Clone)]
@@ -147,7 +172,7 @@ impl Gate for Not {
         1
     }
 
-    fn trigger(&mut self, inputs: &[bool]) -> Vec<bool> {
+    fn trigger(&self, inputs: &[bool]) -> Vec<bool> {
         vec![!inputs[0]]
     }
 }
@@ -164,11 +189,12 @@ impl Gate for BitSwitch {
         1
     }
 
-    fn trigger(&mut self, inputs: &[bool]) -> Vec<bool> {
+    fn trigger(&self, inputs: &[bool]) -> Vec<bool> {
         vec![inputs[0] && inputs[1]]
     }
 }
 
+#[allow(unused)]
 fn desired_truth_table(inputs: &[bool]) -> bool {
     inputs.iter().fold(false, BitXor::bitxor)
 }
