@@ -96,6 +96,22 @@ fn main() {
     dbg!(output);
 }
 
+fn test_circuit<const N: usize>(circuit: &Circuit) -> bool {
+    gen_inputs::<N>().iter().all(|inputs| {
+        let expected = xor_desired_truth_table(inputs.as_slice());
+        let got = circuit
+            .run(inputs.as_slice())
+            .into_iter()
+            .map(Option::unwrap)
+            .collect::<Vec<_>>();
+        expected == got
+    })
+}
+
+fn xor_desired_truth_table(inputs: &[bool]) -> Vec<bool> {
+    vec![inputs.iter().fold(false, BitXor::bitxor)]
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Ord, PartialOrd, Hash)]
 enum ConnectionIndex {
     Input(usize),
@@ -276,9 +292,4 @@ impl Gate for BitSwitch {
     fn trigger(&self, inputs: &[bool]) -> Vec<bool> {
         vec![inputs[0] && inputs[1]]
     }
-}
-
-#[allow(unused)]
-fn desired_truth_table(inputs: &[bool]) -> bool {
-    inputs.iter().fold(false, BitXor::bitxor)
 }
