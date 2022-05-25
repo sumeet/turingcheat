@@ -82,6 +82,7 @@ fn main() {
         },
         vec![ConnectionIndex::Output(0)],
     );
+    dbg!(&connections);
 
     let circuit = Circuit {
         num_outputs: NUM_OUTPUTS,
@@ -89,10 +90,7 @@ fn main() {
         connections,
     };
 
-    //let inputs = gen_inputs::<NUM_INPUTS>();
-    //let output = circuit.run(&inputs[0]);
     let output = circuit.run(&[true, true]);
-
     dbg!(output);
 }
 
@@ -212,33 +210,53 @@ impl Circuit {
     }
 }
 
+#[derive(Debug)]
+struct Connectables {
+    flowing_out: Vec<ConnectionIndex>,
+    flowing_in: Vec<ConnectionIndex>,
+}
+
+impl Connectables {
+    fn new(flowing_out: Vec<ConnectionIndex>, flowing_in: Vec<ConnectionIndex>) -> Self {
+        Self {
+            flowing_out,
+            flowing_in,
+        }
+    }
+}
+
+fn gen_all_connection_sets() -> () {
+    ()
+}
+
 fn generate_all_connection_indices(
     num_inputs: usize,
     num_outputs: usize,
     gates: &[Box<dyn Gate>],
-) -> Vec<ConnectionIndex> {
-    let mut connection_indices = Vec::new();
+) -> Connectables {
+    let mut flowing_out = vec![];
+    let mut flowing_in = vec![];
     for i in 0..num_inputs {
-        connection_indices.push(ConnectionIndex::Input(i));
+        flowing_out.push(ConnectionIndex::Input(i));
     }
     for i in 0..num_outputs {
-        connection_indices.push(ConnectionIndex::Output(i));
+        flowing_in.push(ConnectionIndex::Output(i));
     }
     for (gate_index, gate) in gates.iter().enumerate() {
         for io_index in 0..gate.num_inputs() {
-            connection_indices.push(ConnectionIndex::GateInput {
+            flowing_in.push(ConnectionIndex::GateInput {
                 gate_index,
                 io_index,
             });
         }
         for io_index in 0..gate.num_outputs() {
-            connection_indices.push(ConnectionIndex::GateOutput {
+            flowing_out.push(ConnectionIndex::GateOutput {
                 gate_index,
                 io_index,
             });
         }
     }
-    connection_indices
+    Connectables::new(flowing_out, flowing_in)
 }
 
 fn gen_inputs<const N: usize>() -> Vec<[bool; N]> {
