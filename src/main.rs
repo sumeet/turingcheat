@@ -1,6 +1,7 @@
 #![feature(box_syntax)]
 
 use dyn_clonable::clonable;
+use itertools::Itertools;
 use std::collections::{HashMap, HashSet};
 use std::iter::once;
 use std::ops::BitXor;
@@ -14,8 +15,9 @@ fn main() {
     let not_1_index = 1;
     let bitswitch_0_index = 2;
     let bitswitch_1_index = 3;
-    #[allow(unused)]
+
     let all_connection_indices = generate_all_connection_indices(NUM_INPUTS, NUM_OUTPUTS, &gates);
+    dbg!(gen_all_connection_sets(&all_connection_indices).len());
 
     let mut connections = HashMap::new();
 
@@ -118,10 +120,12 @@ enum ConnectionIndex {
     GateOutput { gate_index: usize, io_index: usize },
 }
 
+type Connections = HashMap<ConnectionIndex, Vec<ConnectionIndex>>;
+
 struct Circuit {
     num_outputs: usize,
     gates: Vec<Box<dyn Gate>>,
-    connections: HashMap<ConnectionIndex, Vec<ConnectionIndex>>,
+    connections: Connections,
 }
 
 impl Circuit {
@@ -225,10 +229,6 @@ impl Connectables {
     }
 }
 
-fn gen_all_connection_sets() -> () {
-    ()
-}
-
 fn generate_all_connection_indices(
     num_inputs: usize,
     num_outputs: usize,
@@ -257,6 +257,67 @@ fn generate_all_connection_indices(
         }
     }
     Connectables::new(flowing_out, flowing_in)
+}
+
+fn gen_remaining_connection_sets(
+    connectables: &Connectables,
+    connections: &Connections,
+) -> Vec<Connections> {
+    let needs_input = connectables
+        .flowing_in
+        .iter()
+        .filter(|i| !connections.values().flatten().contains(i))
+        .collect_vec();
+    if needs_input.is_empty() {
+        // check to see if all inputs are used?
+        return if connectables.flowing_out.len() != connections.len()
+            || contains_infinite_loop(connections)
+        {
+            vec![]
+        } else {
+            vec![connections.clone()]
+        };
+    }
+
+    let mut connectionss = vec![];
+    for needs_input_port in needs_input {
+        for plugs_input_port in &connectables.flowing_out {
+            let mut connections = connections.clone();
+            connections
+                .entry(*plugs_input_port)
+                .or_insert_with(|| vec![])
+                .push(*needs_input_port);
+            connectionss.extend(gen_remaining_connection_sets(connectables, &connections))
+        }
+    }
+    connectionss
+}
+
+fn contains_infinite_loop(connections: &Connections) -> bool {
+    let mut visited = HashSet::new();
+    let mut to_visit = vec![];
+    for (input, outputs) in connections.iter() {
+        for output in outputs {
+            if visited.contains(output) {
+                return true;
+            }
+            visited.insert(*output);
+            to_visit.push((*output, *input));
+        }
+    }
+    while let Some((output, input)) = to_visit.pop() {
+        if visited.contains(&input) {
+            return true;
+        }
+        visited.insert(input);
+        to_visit.push((input, output));
+    }
+    false
+}
+
+fn gen_all_connection_sets(connectables: &Connectables) -> Vec<Connections> {
+    let connections = Connections::new();
+    gen_remaining_connection_sets(connectables, &connections)
 }
 
 fn gen_inputs<const N: usize>() -> Vec<[bool; N]> {
