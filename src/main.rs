@@ -3,7 +3,7 @@
 use dyn_clonable::clonable;
 use itertools::Itertools;
 use std::collections::{HashMap, HashSet};
-use std::iter::once;
+use std::iter::{empty, once};
 use std::ops::BitXor;
 
 fn main() {
@@ -257,38 +257,36 @@ fn generate_all_connection_indices(
     Connectables::new(sources, dests)
 }
 
-fn gen_remaining_connection_sets(
-    connectables: &Connectables,
-    connections: &Connections,
-) -> Vec<Connections> {
-    let dests = connectables
+fn gen_remaining_connection_sets<'a>(
+    connectables: &'a Connectables,
+    connections: &'a Connections,
+) -> Box<dyn Iterator<Item = Connections> + 'a> {
+    let mut dests = connectables
         .dests
         .iter()
         .filter(|i| !connections.values().flatten().contains(i))
-        .collect_vec();
-    if dests.is_empty() {
+        .peekable();
+    if dests.peek().is_none() {
         // check to see if all inputs are used?
         return if connectables.sources.len() != connections.len()
             || contains_infinite_loop(connections)
         {
-            vec![]
+            box empty()
         } else {
-            vec![connections.clone()]
+            box once(connections.clone())
         };
     }
 
-    let mut connectionss = vec![];
-    for dest in dests {
-        for source in &connectables.sources {
+    box dests.flat_map(|dest| {
+        connectables.sources.iter().flat_map(|source| {
             let mut connections = connections.clone();
             connections
                 .entry(*source)
                 .or_insert_with(|| vec![])
                 .push(*dest);
-            connectionss.extend(gen_remaining_connection_sets(connectables, &connections))
-        }
-    }
-    connectionss
+            gen_remaining_connection_sets(connectables, &connections).collect_vec()
+        })
+    })
 }
 
 fn contains_infinite_loop_rec(
@@ -354,7 +352,7 @@ fn contains_infinite_loop(connections: &Connections) -> bool {
 
 fn gen_all_connection_sets(connectables: &Connectables) -> Vec<Connections> {
     let connections = Connections::new();
-    gen_remaining_connection_sets(connectables, &connections)
+    gen_remaining_connection_sets(connectables, &connections).collect()
 }
 
 fn gen_inputs<const N: usize>() -> Vec<[bool; N]> {
