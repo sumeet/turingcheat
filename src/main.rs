@@ -17,7 +17,7 @@ fn main() {
     let bitswitch_1_index = 3;
 
     let all_connection_indices = generate_all_connection_indices(NUM_INPUTS, NUM_OUTPUTS, &gates);
-    dbg!(gen_all_connection_sets(&all_connection_indices).len());
+    dbg!(gen_all_connection_sets(&all_connection_indices).next());
 
     let mut connections = HashMap::new();
 
@@ -259,32 +259,49 @@ fn generate_all_connection_indices(
 
 fn gen_remaining_connection_sets<'a>(
     connectables: &'a Connectables,
-    connections: &'a Connections,
+    connections: Connections,
 ) -> Box<dyn Iterator<Item = Connections> + 'a> {
-    let mut dests = connectables
+    let all_dests = connections
+        .values()
+        .flatten()
+        .copied()
+        .collect::<HashSet<_>>();
+
+    let mut unplugged_dests = connectables
         .dests
         .iter()
-        .filter(|i| !connections.values().flatten().contains(i))
+        .filter(move |i| !all_dests.contains(i))
         .peekable();
-    if dests.peek().is_none() {
+    if unplugged_dests.peek().is_none() {
         // check to see if all inputs are used?
-        return if connectables.sources.len() != connections.len()
-            || contains_infinite_loop(connections)
-        {
+        return if connectables.sources.len() != connections.len() {
             box empty()
         } else {
-            box once(connections.clone())
+            box once(dbg!(connections))
         };
     }
 
-    box dests.flat_map(|dest| {
-        connectables.sources.iter().flat_map(|source| {
+    box unplugged_dests.flat_map(move |dest| {
+        let connections = connections.clone();
+        connectables.sources.iter().flat_map(move |source| {
             let mut connections = connections.clone();
             connections
                 .entry(*source)
                 .or_insert_with(|| vec![])
                 .push(*dest);
-            gen_remaining_connection_sets(connectables, &connections).collect_vec()
+            if contains_infinite_loop(&connections) {
+                let b: Box<dyn Iterator<Item = Connections>> = box empty();
+                b
+            } else {
+                let remaining = gen_remaining_connection_sets(connectables, connections);
+                let remaining = remaining.collect_vec();
+                if remaining.len() != 0 {
+                    panic!("not zero")
+                }
+                box remaining.into_iter()
+                // let b: Box<dyn Iterator<Item = Connections>> = box remaining.into_iter();
+                // b
+            }
         })
     })
 }
@@ -350,9 +367,9 @@ fn contains_infinite_loop(connections: &Connections) -> bool {
     })
 }
 
-fn gen_all_connection_sets(connectables: &Connectables) -> Vec<Connections> {
+fn gen_all_connection_sets(connectables: &Connectables) -> impl Iterator<Item = Connections> + '_ {
     let connections = Connections::new();
-    gen_remaining_connection_sets(connectables, &connections).collect()
+    gen_remaining_connection_sets(connectables, connections)
 }
 
 fn gen_inputs<const N: usize>() -> Vec<[bool; N]> {
