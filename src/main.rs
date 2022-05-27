@@ -96,6 +96,7 @@ fn main() {
     dbg!(output);
 }
 
+// TODO: xor_desired_truth_table can be an argument
 fn test_circuit<const N: usize>(circuit: &Circuit) -> bool {
     gen_inputs::<N>().iter().all(|inputs| {
         let expected = xor_desired_truth_table(inputs.as_slice());
@@ -216,16 +217,13 @@ impl Circuit {
 
 #[derive(Debug)]
 struct Connectables {
-    flowing_out: Vec<ConnectionIndex>,
-    flowing_in: Vec<ConnectionIndex>,
+    sources: Vec<ConnectionIndex>,
+    dests: Vec<ConnectionIndex>,
 }
 
 impl Connectables {
-    fn new(flowing_out: Vec<ConnectionIndex>, flowing_in: Vec<ConnectionIndex>) -> Self {
-        Self {
-            flowing_out,
-            flowing_in,
-        }
+    fn new(sources: Vec<ConnectionIndex>, dests: Vec<ConnectionIndex>) -> Self {
+        Self { sources, dests }
     }
 }
 
@@ -234,43 +232,43 @@ fn generate_all_connection_indices(
     num_outputs: usize,
     gates: &[Box<dyn Gate>],
 ) -> Connectables {
-    let mut flowing_out = vec![];
-    let mut flowing_in = vec![];
+    let mut sources = vec![];
+    let mut dests = vec![];
     for i in 0..num_inputs {
-        flowing_out.push(ConnectionIndex::Input(i));
+        sources.push(ConnectionIndex::Input(i));
     }
     for i in 0..num_outputs {
-        flowing_in.push(ConnectionIndex::Output(i));
+        dests.push(ConnectionIndex::Output(i));
     }
     for (gate_index, gate) in gates.iter().enumerate() {
         for io_index in 0..gate.num_inputs() {
-            flowing_in.push(ConnectionIndex::GateInput {
+            dests.push(ConnectionIndex::GateInput {
                 gate_index,
                 io_index,
             });
         }
         for io_index in 0..gate.num_outputs() {
-            flowing_out.push(ConnectionIndex::GateOutput {
+            sources.push(ConnectionIndex::GateOutput {
                 gate_index,
                 io_index,
             });
         }
     }
-    Connectables::new(flowing_out, flowing_in)
+    Connectables::new(sources, dests)
 }
 
 fn gen_remaining_connection_sets(
     connectables: &Connectables,
     connections: &Connections,
 ) -> Vec<Connections> {
-    let needs_input = connectables
-        .flowing_in
+    let dests = connectables
+        .dests
         .iter()
         .filter(|i| !connections.values().flatten().contains(i))
         .collect_vec();
-    if needs_input.is_empty() {
+    if dests.is_empty() {
         // check to see if all inputs are used?
-        return if connectables.flowing_out.len() != connections.len()
+        return if connectables.sources.len() != connections.len()
             || contains_infinite_loop(connections)
         {
             vec![]
@@ -280,39 +278,78 @@ fn gen_remaining_connection_sets(
     }
 
     let mut connectionss = vec![];
-    for needs_input_port in needs_input {
-        for plugs_input_port in &connectables.flowing_out {
+    for dest in dests {
+        for source in &connectables.sources {
             let mut connections = connections.clone();
             connections
-                .entry(*plugs_input_port)
+                .entry(*source)
                 .or_insert_with(|| vec![])
-                .push(*needs_input_port);
+                .push(*dest);
             connectionss.extend(gen_remaining_connection_sets(connectables, &connections))
         }
     }
     connectionss
 }
 
-fn contains_infinite_loop(connections: &Connections) -> bool {
-    let mut visited = HashSet::new();
-    let mut to_visit = vec![];
-    for (input, outputs) in connections.iter() {
-        for output in outputs {
-            if visited.contains(output) {
-                return true;
+fn contains_infinite_loop_rec(
+    connections: &Connections,
+    from: ConnectionIndex,
+    visited_gates: &mut HashSet<usize>,
+) -> bool {
+    let outs = connections.get(&from).unwrap();
+    for out in outs {
+        match out {
+            ConnectionIndex::Input(_) | ConnectionIndex::GateOutput { .. } => {
+                panic!("unexpected, input as destination")
             }
-            visited.insert(*output);
-            to_visit.push((*output, *input));
+            ConnectionIndex::Output(_) => {
+                // end of the road, no infinite loop
+                continue;
+            }
+            ConnectionIndex::GateInput {
+                gate_index: this_output_index,
+                ..
+            } => {
+                if visited_gates.contains(this_output_index) {
+                    return true;
+                }
+                visited_gates.insert(*this_output_index);
+
+                let nexts = connections.keys().filter(|conn_index| match conn_index {
+                    ConnectionIndex::Input(_) => false,
+                    ConnectionIndex::Output(_) | ConnectionIndex::GateInput { .. } => {
+                        unreachable!()
+                    }
+                    ConnectionIndex::GateOutput {
+                        gate_index: next_index,
+                        ..
+                    } => this_output_index == next_index,
+                });
+                for next in nexts {
+                    if contains_infinite_loop_rec(connections, *next, &mut visited_gates.clone()) {
+                        return true;
+                    }
+                }
+            }
         }
-    }
-    while let Some((output, input)) = to_visit.pop() {
-        if visited.contains(&input) {
-            return true;
-        }
-        visited.insert(input);
-        to_visit.push((input, output));
     }
     false
+}
+
+fn contains_infinite_loop(connections: &Connections) -> bool {
+    let mut input_gates = connections
+        .keys()
+        .filter(|conn_index| matches!(conn_index, ConnectionIndex::Input(_)));
+    input_gates.any(|conn_index| {
+        let mut visited = HashSet::new();
+        match conn_index {
+            ConnectionIndex::Input(index) => {
+                visited.insert(*index);
+            }
+            _ => unreachable!(),
+        }
+        contains_infinite_loop_rec(connections, *conn_index, &mut visited)
+    })
 }
 
 fn gen_all_connection_sets(connectables: &Connectables) -> Vec<Connections> {
@@ -371,4 +408,64 @@ impl Gate for BitSwitch {
     fn trigger(&self, inputs: &[bool]) -> Vec<bool> {
         vec![inputs[0] && inputs[1]]
     }
+}
+
+#[test]
+fn test_contains_infinite_loop() {
+    // input directly connected to output
+    let mut connections = Connections::new();
+    connections.insert(ConnectionIndex::Input(0), vec![ConnectionIndex::Output(0)]);
+    assert!(!contains_infinite_loop(&connections));
+
+    // gate going to itself
+    let mut connections = Connections::new();
+    connections.insert(
+        ConnectionIndex::Input(0),
+        vec![ConnectionIndex::GateInput {
+            gate_index: 0,
+            io_index: 0,
+        }],
+    );
+    connections.insert(
+        ConnectionIndex::GateOutput {
+            gate_index: 0,
+            io_index: 0,
+        },
+        vec![ConnectionIndex::GateInput {
+            gate_index: 0,
+            io_index: 0,
+        }],
+    );
+    assert!(contains_infinite_loop(&connections));
+
+    // gate going through itself through another gate
+    let mut connections = Connections::new();
+    connections.insert(
+        ConnectionIndex::Input(0),
+        vec![ConnectionIndex::GateInput {
+            gate_index: 0,
+            io_index: 0,
+        }],
+    );
+    connections.insert(
+        ConnectionIndex::GateOutput {
+            gate_index: 0,
+            io_index: 0,
+        },
+        vec![ConnectionIndex::GateInput {
+            gate_index: 1,
+            io_index: 0,
+        }],
+    );
+    connections.insert(
+        ConnectionIndex::GateOutput {
+            gate_index: 1,
+            io_index: 0,
+        },
+        vec![ConnectionIndex::GateInput {
+            gate_index: 0,
+            io_index: 0,
+        }],
+    );
+    assert!(contains_infinite_loop(&connections));
 }
