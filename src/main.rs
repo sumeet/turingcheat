@@ -36,7 +36,7 @@ fn test_circuit<const N: usize>(circuit: &Circuit) -> bool {
         .filter(|inputs| {
             let expected = xor_desired_truth_table(inputs.as_slice())
                 .into_iter()
-                .map(Option::Some)
+                .map(Some)
                 .collect::<Vec<_>>();
             let got = circuit.run(inputs.as_slice());
             expected == got
@@ -118,7 +118,11 @@ impl Circuit {
         {
             used_input_gates.insert(gate_index);
 
-            let triggered_outputs = self.gates.get(gate_index).unwrap().trigger(&inputs);
+            let gate = self.gates.get(gate_index).unwrap();
+            if !gate.is_on(&inputs) {
+                continue;
+            }
+            let triggered_outputs = gate.trigger(&inputs);
             for (i, output) in triggered_outputs.iter().enumerate() {
                 let dests = self
                     .connections
@@ -153,13 +157,22 @@ impl Circuit {
 
 #[derive(Debug)]
 struct Connectables {
-    sources: Vec<ConnectionIndex>,
-    dests: Vec<ConnectionIndex>,
+    sources: HashSet<ConnectionIndex>,
+    switch_sources: HashSet<ConnectionIndex>,
+    dests: HashSet<ConnectionIndex>,
 }
 
 impl Connectables {
-    fn new(sources: Vec<ConnectionIndex>, dests: Vec<ConnectionIndex>) -> Self {
-        Self { sources, dests }
+    fn new(
+        sources: HashSet<ConnectionIndex>,
+        switch_sources: HashSet<ConnectionIndex>,
+        dests: HashSet<ConnectionIndex>,
+    ) -> Self {
+        Self {
+            sources,
+            switch_sources,
+            dests,
+        }
     }
 }
 
@@ -168,29 +181,35 @@ fn generate_all_connection_indices(
     num_outputs: usize,
     gates: &[Box<dyn Gate>],
 ) -> Connectables {
-    let mut sources = vec![];
-    let mut dests = vec![];
+    let mut sources = HashSet::new();
+    let mut switch_sources = HashSet::new();
+    let mut dests = HashSet::new();
     for i in 0..num_inputs {
-        sources.push(ConnectionIndex::Input(i));
+        sources.insert(ConnectionIndex::Input(i));
     }
     for i in 0..num_outputs {
-        dests.push(ConnectionIndex::Output(i));
+        dests.insert(ConnectionIndex::Output(i));
     }
     for (gate_index, gate) in gates.iter().enumerate() {
         for io_index in 0..gate.num_inputs() {
-            dests.push(ConnectionIndex::GateInput {
+            dests.insert(ConnectionIndex::GateInput {
                 gate_index,
                 io_index,
             });
         }
         for io_index in 0..gate.num_outputs() {
-            sources.push(ConnectionIndex::GateOutput {
+            let output = ConnectionIndex::GateOutput {
                 gate_index,
                 io_index,
-            });
+            };
+            if gate.is_switch() {
+                switch_sources.insert(output);
+            } else {
+                sources.insert(output);
+            }
         }
     }
-    Connectables::new(sources, dests)
+    Connectables::new(sources, switch_sources, dests)
 }
 
 fn gen_all_connection_sets(connectables: &Connectables) -> impl Iterator<Item = Connections> + '_ {
@@ -202,17 +221,13 @@ fn gen_remaining_connection_sets<'a>(
     connectables: &'a Connectables,
     connections: Connections,
 ) -> Box<dyn Iterator<Item = Connections> + 'a> {
-    let all_dests = connections
+    let all_used_dests = connections
         .values()
         .flatten()
         .copied()
         .collect::<HashSet<_>>();
 
-    let next_unplugged_dest = connectables
-        .dests
-        .iter()
-        .filter(move |i| !all_dests.contains(i))
-        .next();
+    let next_unplugged_dest = connectables.dests.difference(&all_used_dests).next();
     if next_unplugged_dest.is_none() {
         // check to see if all inputs are used?
         return if connectables.sources.len() != connections.len() {
@@ -315,6 +330,12 @@ trait Gate: Clone {
     fn num_inputs(&self) -> usize;
     fn num_outputs(&self) -> usize;
     fn trigger(&self, inputs: &[bool]) -> Vec<bool>;
+    fn is_on(&self, _inputs: &[bool]) -> bool {
+        true
+    }
+    fn is_switch(&self) -> bool {
+        false
+    }
 }
 
 #[derive(Clone)]
@@ -324,11 +345,9 @@ impl Gate for Not {
     fn num_inputs(&self) -> usize {
         1
     }
-
     fn num_outputs(&self) -> usize {
         1
     }
-
     fn trigger(&self, inputs: &[bool]) -> Vec<bool> {
         vec![!inputs[0]]
     }
@@ -341,13 +360,17 @@ impl Gate for BitSwitch {
     fn num_inputs(&self) -> usize {
         2
     }
-
     fn num_outputs(&self) -> usize {
         1
     }
-
     fn trigger(&self, inputs: &[bool]) -> Vec<bool> {
-        vec![inputs[0] && inputs[1]]
+        vec![inputs[1]]
+    }
+    fn is_on(&self, inputs: &[bool]) -> bool {
+        inputs[0]
+    }
+    fn is_switch(&self) -> bool {
+        true
     }
 }
 
