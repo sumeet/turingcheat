@@ -7,106 +7,42 @@ use std::iter::{empty, once};
 use std::ops::BitXor;
 
 fn main() {
-    const NUM_INPUTS: usize = 2;
-    const NUM_OUTPUTS: usize = 1;
     let gates: Vec<Box<dyn Gate>> =
         vec![box Not {}, box Not {}, box BitSwitch {}, box BitSwitch {}];
-    let not_0_index = 0;
-    let not_1_index = 1;
-    let bitswitch_0_index = 2;
-    let bitswitch_1_index = 3;
-
+    const NUM_INPUTS: usize = 2;
+    const NUM_OUTPUTS: usize = 1;
     let all_connection_indices = generate_all_connection_indices(NUM_INPUTS, NUM_OUTPUTS, &gates);
-    dbg!(gen_all_connection_sets(&all_connection_indices).next());
+    let all_connection_sets = gen_all_connection_sets(&all_connection_indices).collect_vec();
+    for connections in all_connection_sets {
+        let circuit = Circuit {
+            num_outputs: NUM_OUTPUTS,
+            gates: gates.clone(),
+            connections,
+        };
 
-    let mut connections = HashMap::new();
-
-    // input 0
-    connections.insert(
-        ConnectionIndex::Input(0),
-        vec![ConnectionIndex::GateInput {
-            gate_index: bitswitch_0_index,
-            io_index: 0,
-        }],
-    );
-    // input 1
-    connections.insert(
-        ConnectionIndex::Input(1),
-        vec![
-            ConnectionIndex::GateInput {
-                gate_index: bitswitch_0_index,
-                io_index: 1,
-            },
-            ConnectionIndex::GateInput {
-                gate_index: not_0_index,
-                io_index: 0,
-            },
-        ],
-    );
-    // bitswitch 0 output
-    connections.insert(
-        ConnectionIndex::GateOutput {
-            gate_index: bitswitch_0_index,
-            io_index: 0,
-        },
-        vec![ConnectionIndex::GateInput {
-            gate_index: not_1_index,
-            io_index: 0,
-        }],
-    );
-    // not 0 output
-    connections.insert(
-        ConnectionIndex::GateOutput {
-            gate_index: not_0_index,
-            io_index: 0,
-        },
-        vec![ConnectionIndex::GateInput {
-            gate_index: bitswitch_1_index,
-            io_index: 0,
-        }],
-    );
-    // not 1 output
-    connections.insert(
-        ConnectionIndex::GateOutput {
-            gate_index: not_1_index,
-            io_index: 0,
-        },
-        vec![ConnectionIndex::GateInput {
-            gate_index: bitswitch_1_index,
-            io_index: 1,
-        }],
-    );
-    // bitswitch 1 output
-    connections.insert(
-        ConnectionIndex::GateOutput {
-            gate_index: bitswitch_1_index,
-            io_index: 0,
-        },
-        vec![ConnectionIndex::Output(0)],
-    );
-    dbg!(&connections);
-
-    let circuit = Circuit {
-        num_outputs: NUM_OUTPUTS,
-        gates,
-        connections,
-    };
-
-    let output = circuit.run(&[true, true]);
-    dbg!(output);
+        if test_circuit::<NUM_INPUTS>(&circuit) {
+            dbg!(circuit.connections);
+            return;
+        }
+    }
+    println!("got to the end :(")
 }
 
 // TODO: xor_desired_truth_table can be an argument
 fn test_circuit<const N: usize>(circuit: &Circuit) -> bool {
-    gen_inputs::<N>().iter().all(|inputs| {
-        let expected = xor_desired_truth_table(inputs.as_slice());
-        let got = circuit
-            .run(inputs.as_slice())
-            .into_iter()
-            .map(Option::unwrap)
-            .collect::<Vec<_>>();
-        expected == got
-    })
+    let inputs = gen_inputs::<N>();
+    let ct = inputs
+        .iter()
+        .filter(|inputs| {
+            let expected = xor_desired_truth_table(inputs.as_slice())
+                .into_iter()
+                .map(Option::Some)
+                .collect::<Vec<_>>();
+            let got = circuit.run(inputs.as_slice());
+            expected == got
+        })
+        .count();
+    ct == inputs.len()
 }
 
 fn xor_desired_truth_table(inputs: &[bool]) -> Vec<bool> {
@@ -257,6 +193,11 @@ fn generate_all_connection_indices(
     Connectables::new(sources, dests)
 }
 
+fn gen_all_connection_sets(connectables: &Connectables) -> impl Iterator<Item = Connections> + '_ {
+    let connections = Connections::new();
+    gen_remaining_connection_sets(connectables, connections)
+}
+
 fn gen_remaining_connection_sets<'a>(
     connectables: &'a Connectables,
     connections: Connections,
@@ -267,42 +208,32 @@ fn gen_remaining_connection_sets<'a>(
         .copied()
         .collect::<HashSet<_>>();
 
-    let mut unplugged_dests = connectables
+    let next_unplugged_dest = connectables
         .dests
         .iter()
         .filter(move |i| !all_dests.contains(i))
-        .peekable();
-    if unplugged_dests.peek().is_none() {
+        .next();
+    if next_unplugged_dest.is_none() {
         // check to see if all inputs are used?
         return if connectables.sources.len() != connections.len() {
             box empty()
         } else {
-            box once(dbg!(connections))
+            box once(connections)
         };
     }
 
-    box unplugged_dests.flat_map(move |dest| {
-        let connections = connections.clone();
-        connectables.sources.iter().flat_map(move |source| {
-            let mut connections = connections.clone();
-            connections
-                .entry(*source)
-                .or_insert_with(|| vec![])
-                .push(*dest);
-            if contains_infinite_loop(&connections) {
-                let b: Box<dyn Iterator<Item = Connections>> = box empty();
-                b
-            } else {
-                let remaining = gen_remaining_connection_sets(connectables, connections);
-                let remaining = remaining.collect_vec();
-                if remaining.len() != 0 {
-                    panic!("not zero")
-                }
-                box remaining.into_iter()
-                // let b: Box<dyn Iterator<Item = Connections>> = box remaining.into_iter();
-                // b
-            }
-        })
+    let next_unplugged_dest = next_unplugged_dest.copied().unwrap();
+    box connectables.sources.iter().flat_map(move |source| {
+        let mut connections = connections.clone();
+        connections
+            .entry(*source)
+            .or_insert_with(|| vec![])
+            .push(next_unplugged_dest);
+        if contains_infinite_loop(&connections) {
+            box empty()
+        } else {
+            gen_remaining_connection_sets(connectables, connections)
+        }
     })
 }
 
@@ -365,11 +296,6 @@ fn contains_infinite_loop(connections: &Connections) -> bool {
         }
         contains_infinite_loop_rec(connections, *conn_index, &mut visited)
     })
-}
-
-fn gen_all_connection_sets(connectables: &Connectables) -> impl Iterator<Item = Connections> + '_ {
-    let connections = Connections::new();
-    gen_remaining_connection_sets(connectables, connections)
 }
 
 fn gen_inputs<const N: usize>() -> Vec<[bool; N]> {
