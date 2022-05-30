@@ -38,7 +38,10 @@ fn test_circuit<const N: usize>(circuit: &Circuit) -> bool {
                 .into_iter()
                 .map(Some)
                 .collect::<Vec<_>>();
-            let got = circuit.run(inputs.as_slice());
+            let got = circuit
+                .run(inputs.as_slice())
+                .map_err(|e| println!("error running circuit: {:?}\n\ncircuit: {:#?}", e, circuit))
+                .unwrap();
             expected == got
         })
         .count();
@@ -67,7 +70,7 @@ struct Circuit {
 }
 
 impl Circuit {
-    fn run(&self, inputs: &[bool]) -> Vec<Option<bool>> {
+    fn run(&self, inputs: &[bool]) -> Result<Vec<Option<bool>>, Box<dyn std::error::Error>> {
         let mut outputs = vec![None; self.num_outputs];
 
         let mut set_inputs_by_gate = self
@@ -80,8 +83,7 @@ impl Circuit {
             let dests = self
                 .connections
                 .get(&ConnectionIndex::Input(i))
-                .ok_or_else(|| format!("No connection for input {}", i))
-                .unwrap();
+                .ok_or_else(|| format!("No connection for input {}", i))?;
             for dest in dests {
                 match dest {
                     ConnectionIndex::GateInput {
@@ -131,8 +133,7 @@ impl Circuit {
                         gate_index,
                         io_index: i,
                     })
-                    .ok_or_else(|| format!("No connection for gate input {} {}", gate_index, i))
-                    .unwrap();
+                    .ok_or_else(|| format!("No connection for gate input {} {}", gate_index, i))?;
                 for dest in dests {
                     match dest {
                         ConnectionIndex::GateInput {
@@ -152,7 +153,7 @@ impl Circuit {
                 }
             }
         }
-        outputs
+        Ok(outputs)
     }
 }
 
@@ -220,7 +221,7 @@ fn gen_all_connection_sets(connectables: &Connectables) -> impl Iterator<Item = 
 
 fn gen_remaining_connection_sets<'a>(
     connectables: &'a Connectables,
-    mut connections: Connections,
+    connections: Connections,
 ) -> Box<dyn Iterator<Item = Connections> + 'a> {
     let all_used_dests = connections
         .values()
@@ -228,22 +229,12 @@ fn gen_remaining_connection_sets<'a>(
         .copied()
         .collect::<HashSet<_>>();
 
-    // hack for switches, connect all switches' outputs to the same dest
-    let (connected, disconnected): (Vec<ConnectionIndex>, Vec<ConnectionIndex>) = connectables
-        .switch_sources
-        .iter()
-        .partition(|switch_source| connections.contains_key(switch_source));
-
-    // XXX: super hack, assuming there's only two switches in the set, which is true in our case :)
-    if connected.len() == 1 && disconnected.len() == 1 {
-        let connected_dest = &connections[&connected[0]];
-        connections.insert(disconnected[0], connected_dest.clone());
-    }
-
     let next_unplugged_dest = connectables.dests.difference(&all_used_dests).next();
     if next_unplugged_dest.is_none() {
         // check to see if all inputs are used?
-        return if connectables.sources.len() != connections.len() {
+        return if connectables.sources.len() + connectables.switch_sources.len()
+            != connections.len()
+        {
             box empty()
         } else {
             box once(connections)
@@ -251,22 +242,34 @@ fn gen_remaining_connection_sets<'a>(
     }
 
     let next_unplugged_dest = next_unplugged_dest.copied().unwrap();
-    box connectables
-        .sources
-        .iter()
-        .chain(&connectables.switch_sources)
-        .flat_map(move |source| {
-            let mut connections = connections.clone();
-            connections
-                .entry(*source)
-                .or_insert_with(|| vec![])
-                .push(next_unplugged_dest);
-            if contains_infinite_loop(&connections) {
-                box empty()
-            } else {
-                gen_remaining_connection_sets(connectables, connections)
-            }
-        })
+    let connections2 = connections.clone();
+    let from_sources = connectables.sources.iter().flat_map(move |source| {
+        let mut connections = connections2.clone();
+        connections
+            .entry(*source)
+            .or_insert_with(|| vec![])
+            .push(next_unplugged_dest);
+        if contains_infinite_loop(&connections) {
+            box empty()
+        } else {
+            gen_remaining_connection_sets(connectables, connections)
+        }
+    });
+    let mut from_switch_sources = connections;
+    for switch_source in &connectables.switch_sources {
+        from_switch_sources
+            .entry(*switch_source)
+            .or_insert_with(|| vec![])
+            .push(next_unplugged_dest);
+    }
+    if contains_infinite_loop(&from_switch_sources) {
+        box from_sources
+    } else {
+        box from_sources.chain(gen_remaining_connection_sets(
+            connectables,
+            from_switch_sources,
+        ))
+    }
 }
 
 fn contains_infinite_loop_rec(
