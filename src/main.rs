@@ -21,11 +21,57 @@ fn main() {
         };
 
         if test_circuit::<NUM_INPUTS>(&circuit) {
-            dbg!(circuit.connections);
+            println!("digraph {{");
+            // rotate 90 degrees to match the in-game view
+            println!("rotate = 90");
+            println!("node [shape=record]");
+            for (src, dests) in circuit.connections {
+                let src_edge = match src {
+                    ConnectionIndex::Input(n) => format!("Input{}", n),
+                    ConnectionIndex::GateOutput {
+                        gate_index,
+                        io_index,
+                    } => format!("G{}:O{}", gate_index, io_index),
+                    ConnectionIndex::Output(_) | ConnectionIndex::GateInput { .. } => {
+                        unreachable!()
+                    }
+                };
+                for dest in dests {
+                    let dest_edge = match dest {
+                        ConnectionIndex::Output(n) => format!("Output{}", n),
+                        ConnectionIndex::GateInput {
+                            gate_index,
+                            io_index,
+                        } => format!("G{}:I{}", gate_index, io_index),
+                        ConnectionIndex::Input(_) | ConnectionIndex::GateOutput { .. } => {
+                            unreachable!()
+                        }
+                    };
+                    println!("    {} -> {};", src_edge, dest_edge);
+                }
+            }
+            for (gate_index, gate) in circuit.gates.iter().enumerate() {
+                let input_ports = (0..gate.num_inputs())
+                    .zip(gate.input_labels())
+                    .map(|(i, input_label)| format!("<I{}> {}", i, input_label))
+                    .join(" | ");
+                let output_ports = (0..gate.num_outputs())
+                    .map(|i| format!("<O{}> out{}", i, i))
+                    .join(" | ");
+                println!(
+                    "    G{} [label=\"{} | {} {} | {}\"];",
+                    gate_index,
+                    input_ports,
+                    gate.name(),
+                    gate_index,
+                    output_ports,
+                );
+            }
+            println!("}}");
             return;
         }
     }
-    println!("got to the end :(")
+    println!("got to the end, no solution found :(")
 }
 
 // TODO: xor_desired_truth_table can be an argument
@@ -347,7 +393,11 @@ fn gen_inputs<const N: usize>() -> Vec<[bool; N]> {
 
 #[clonable]
 trait Gate: Clone + std::fmt::Debug {
+    fn name(&self) -> &str;
     fn num_inputs(&self) -> usize;
+    fn input_labels(&self) -> Vec<String> {
+        (0..self.num_inputs()).map(|i| format!("in{}", i)).collect()
+    }
     fn num_outputs(&self) -> usize;
     fn trigger(&self, inputs: &[bool]) -> Vec<bool>;
     fn is_on(&self, _inputs: &[bool]) -> bool {
@@ -362,6 +412,9 @@ trait Gate: Clone + std::fmt::Debug {
 struct Not {}
 
 impl Gate for Not {
+    fn name(&self) -> &str {
+        "Not"
+    }
     fn num_inputs(&self) -> usize {
         1
     }
@@ -377,8 +430,14 @@ impl Gate for Not {
 struct BitSwitch {}
 
 impl Gate for BitSwitch {
+    fn name(&self) -> &str {
+        "BitSwitch"
+    }
     fn num_inputs(&self) -> usize {
         2
+    }
+    fn input_labels(&self) -> Vec<String> {
+        vec!["in-switch".to_string(), "in-signal".to_string()]
     }
     fn num_outputs(&self) -> usize {
         1
